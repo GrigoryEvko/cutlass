@@ -39,6 +39,9 @@
 #include "cutlass/layout/matrix.h"
 #include "cutlass/util/host_tensor.h"
 
+#include <cfenv>
+#include <limits>
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace test {
@@ -445,6 +448,111 @@ TEST(NumericConversion, f32x8_to_s8x8_rn) {
   using Destination = int8_t;
   const char dest_name[] = "int8_t";
   test::core::kernel::run_test<Destination, Source, kN>(dest_name, source_name);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// The float to int8_t conversion must saturate on the host arm and on the
+/// device arm alike.
+///
+/// PTX clamps a float to integer conversion into the range of the destination
+/// type, and it gives 0 for a NaN input. The two arms of the converter must
+/// agree, because the host arm is the reference of the device arm.
+TEST(NumericConversion, f32x8_to_s8x8_saturates_on_each_arm) {
+
+  int const kN = 8;
+  using Source = float;
+  using Destination = int8_t;
+
+  float const inf = std::numeric_limits<float>::infinity();
+  float const source_value[kN] = {
+    127.0f, 127.5f, 128.0f, 200.0f, -128.0f, -129.0f, inf, -inf
+  };
+  // 127.5f rounds to 128 under round to nearest even, thus the clamp gives 127.
+  int const expected[kN] = {127, 127, 127, 127, -128, -128, 127, -128};
+
+  cutlass::HostTensor<Destination, cutlass::layout::RowMajor> destination({1, kN});
+  cutlass::HostTensor<Source, cutlass::layout::RowMajor> source({1, kN});
+
+  for (int i = 0; i < kN; ++i) {
+    source.host_ref().at({0, i}) = source_value[i];
+  }
+  source.sync_device();
+
+  test::core::kernel::convert<Destination, Source, kN><<< dim3(1, 1), dim3(1, 1) >>>(
+    reinterpret_cast<cutlass::Array<Destination, kN> *>(destination.device_data()),
+    reinterpret_cast<cutlass::Array<Source, kN> const *>(source.device_data())
+  );
+  destination.sync_host();
+
+  cutlass::Array<Source, kN> host_source;
+  for (int i = 0; i < kN; ++i) {
+    host_source[i] = source_value[i];
+  }
+  cutlass::Array<Destination, kN> host_result =
+    cutlass::NumericArrayConverter<Destination, Source, kN>::convert(host_source);
+
+  for (int i = 0; i < kN; ++i) {
+    EXPECT_EQ(int(destination.host_ref().at({0, i})), expected[i])
+      << "device arm, source " << source_value[i];
+    EXPECT_EQ(int(host_result[i]), expected[i])
+      << "host arm, source " << source_value[i];
+    EXPECT_EQ(int(cutlass::NumericConverter<Destination, Source>::convert(source_value[i])),
+              expected[i])
+      << "host scalar converter, source " << source_value[i];
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// The float to int4b_t conversion must saturate and must not break a bound of
+/// the destination type. The integer_subbyte constructor asserts each bound.
+TEST(NumericConversion, f32x8_to_s4x8_saturates_on_the_host) {
+
+  int const kN = 8;
+
+  cutlass::Array<float, kN> source;
+  for (int i = 0; i < kN; ++i) {
+    source[i] = 0.0f;
+  }
+  source[0] = 8.0f;      // int4b_t holds -8 thru 7
+  source[1] = -9.0f;
+
+  cutlass::Array<cutlass::int4b_t, kN> result =
+    cutlass::NumericArrayConverter<cutlass::int4b_t, float, kN>::convert(source);
+
+  EXPECT_EQ(int(result[0]), 7);
+  EXPECT_EQ(int(result[1]), -8);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A host converter must not change the rounding mode of the calling thread.
+///
+/// Each host arm calls std::fesetround. A call that does not put the mode back
+/// changes the result of each later floating point operation in that thread.
+TEST(NumericConversion, f32_to_int_keeps_the_rounding_mode_of_the_caller) {
+
+  int const initial = std::fegetround();
+  ASSERT_EQ(std::fesetround(FE_UPWARD), 0);
+
+  (void) cutlass::NumericConverter<int32_t, float,
+      cutlass::FloatRoundStyle::round_toward_zero>::convert(1.5f);
+  EXPECT_EQ(std::fegetround(), FE_UPWARD);
+
+  (void) cutlass::NumericConverter<int8_t, float,
+      cutlass::FloatRoundStyle::round_to_nearest>::convert(1.5f);
+  EXPECT_EQ(std::fegetround(), FE_UPWARD);
+
+  (void) cutlass::NumericConverter<uint8_t, float,
+      cutlass::FloatRoundStyle::round_toward_zero>::convert(1.5f);
+  EXPECT_EQ(std::fegetround(), FE_UPWARD);
+
+  (void) cutlass::NumericConverter<int8_t, cutlass::half_t,
+      cutlass::FloatRoundStyle::round_to_nearest>::convert(cutlass::half_t(1.5f));
+  EXPECT_EQ(std::fegetround(), FE_UPWARD);
+
+  std::fesetround(initial);
 }
 
 TEST(NumericConversion, fe4m3_to_f32_2_elements) {

@@ -96,6 +96,115 @@ struct NumericConverter {
   }
 };
 
+namespace detail {
+
+/// An always false value that depends on a rounding style.
+///
+/// A static_assert on this value fires when the compiler instantiates the
+/// template that holds it, and not before.
+template <FloatRoundStyle>
+inline constexpr bool round_style_not_supported = false;
+
+} // namespace detail
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Host support for the float to integer converters
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+#if !defined(__CUDACC_RTC__)
+namespace detail {
+
+/// Holds the rounding mode of the calling thread, and puts it back on exit.
+///
+/// std::fesetround changes the rounding mode of the thread that calls it. Each
+/// later floating point operation in that thread reads the changed mode. Thus a
+/// converter that sets the mode must put the mode back before it returns. The
+/// destructor does this on each return path, and also when an exception unwinds
+/// the stack.
+///
+/// The constructor writes the mode only when the thread does not hold that mode
+/// already. Thus the usual case costs one read of the mode and no write.
+class ScopedRoundingMode {
+public:
+  explicit ScopedRoundingMode(int mode): previous_(std::fegetround()), changed_(false) {
+    if (mode != previous_) {
+      std::fesetround(mode);
+      changed_ = true;
+    }
+  }
+
+  ~ScopedRoundingMode() {
+    if (changed_) {
+      std::fesetround(previous_);
+    }
+  }
+
+  ScopedRoundingMode(ScopedRoundingMode const &) = delete;
+  ScopedRoundingMode & operator=(ScopedRoundingMode const &) = delete;
+
+private:
+  int previous_;
+  bool changed_;
+};
+
+/// Converts one float value to one integer value, with saturation.
+///
+/// The device arm of each float to integer converter uses a PTX cvt
+/// instruction. PTX clamps a float to integer conversion into the range of the
+/// destination type, and it gives 0 for a NaN input. The host arm must give the
+/// same result as the device arm.
+///
+/// A cast of an out of range float value to an integer type is undefined
+/// behavior in C++. On x86-64 such a cast gives 0x80000000 for +Inf, for -Inf
+/// and for a NaN alike. Thus this function clamps in floating point, before the
+/// cast, and not after the cast.
+///
+/// Complexity: O(1).
+///
+/// \tparam T The destination integer type
+/// \tparam Mode The rounding mode, one of the FE_ macros of <cfenv>
+/// \param s The source value
+/// \return The saturated integer value
+template <class T, int Mode>
+T float_to_int_sat(float s) {
+  static_assert(cutlass::platform::numeric_limits<T>::is_integer,
+    "float_to_int_sat needs an integer destination type.");
+
+  double rounded;
+  if constexpr (Mode == FE_TOWARDZERO) {
+    // std::trunc rounds toward zero, and it reads no rounding mode. Thus this
+    // arm needs no change of the mode of the thread.
+    rounded = static_cast<double>(std::trunc(s));
+  }
+  else {
+    ScopedRoundingMode guard(Mode);
+    rounded = static_cast<double>(std::nearbyint(s));
+  }
+
+  // A NaN value compares false against each value, thus this test finds a NaN.
+  if (!(rounded == rounded)) {
+    return T(0);
+  }
+
+  // A double value holds each bound of a 32 bit integer type with no loss, thus
+  // the two comparisons that follow are exact.
+  double const lo = static_cast<double>(cutlass::platform::numeric_limits<T>::lowest());
+  double const hi = static_cast<double>(cutlass::platform::numeric_limits<T>::max());
+
+  if (rounded < lo) {
+    return cutlass::platform::numeric_limits<T>::lowest();
+  }
+  if (rounded > hi) {
+    return cutlass::platform::numeric_limits<T>::max();
+  }
+  return static_cast<T>(rounded);
+}
+
+} // namespace detail
+#endif // !defined(__CUDACC_RTC__)
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Partial specializations for float => int32_t
@@ -114,8 +223,7 @@ struct NumericConverter<int32_t, float, FloatRoundStyle::round_to_nearest> {
     #if __CUDA_ARCH__
     return __float2int_rn(s);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TONEAREST);
-    return static_cast<result_type>(std::nearbyint(s));
+    return detail::float_to_int_sat<result_type, FE_TONEAREST>(s);
     #endif
   }
 
@@ -137,8 +245,7 @@ struct NumericConverter<int32_t, float, FloatRoundStyle::round_toward_zero> {
     #if __CUDA_ARCH__
     return __float2int_rz(s);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TOWARDZERO);
-    return (result_type)std::nearbyint(s);
+    return detail::float_to_int_sat<result_type, FE_TOWARDZERO>(s);
     #endif
   }
 
@@ -168,13 +275,7 @@ struct NumericConverter<int8_t, float, FloatRoundStyle::round_to_nearest> {
     asm volatile("cvt.rni.sat.s8.f32 %0, %1;" : "=r"(intermediate) : "f"(s));
     return static_cast<result_type>(intermediate);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TONEAREST);
-    int32_t intermediate = (int32_t)std::nearbyint(s);
-    // Low-end saturation
-    intermediate = std::max(intermediate, (int32_t)std::numeric_limits<int8_t>::lowest());
-    // High-end saturation
-    intermediate = std::min(intermediate, (int32_t)std::numeric_limits<int8_t>::max());
-    return static_cast<result_type>(intermediate);
+    return detail::float_to_int_sat<result_type, FE_TONEAREST>(s);
     #endif
   }
 
@@ -198,14 +299,8 @@ struct NumericConverter<int8_t, float, FloatRoundStyle::round_toward_zero> {
     asm volatile("cvt.rzi.sat.s8.f32 %0, %1;" : "=r"(intermediate) : "f"(s));
     return static_cast<result_type>(intermediate);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TOWARDZERO);
-    int32_t intermediate = (int32_t)std::nearbyint(s);
-    // Low-end saturation
-    intermediate = std::max(intermediate, (int32_t)std::numeric_limits<int8_t>::lowest());
-    // High-end saturation
-    intermediate = std::min(intermediate, (int32_t)std::numeric_limits<int8_t>::max());
-    return static_cast<result_type>(intermediate);
-    #endif 
+    return detail::float_to_int_sat<result_type, FE_TOWARDZERO>(s);
+    #endif
   }
 
   CUTLASS_HOST_DEVICE
@@ -228,13 +323,7 @@ struct NumericConverter<uint8_t, float, FloatRoundStyle::round_to_nearest> {
     asm volatile("cvt.rni.sat.u8.f32 %0, %1;" : "=r"(intermediate) : "f"(s));
     return static_cast<result_type>(intermediate);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TONEAREST);
-    int32_t intermediate = (int32_t)std::nearbyint(s);
-    // Low-end saturation
-    intermediate = std::max(intermediate, (int32_t)std::numeric_limits<uint8_t>::lowest());
-    // High-end saturation
-    intermediate = std::min(intermediate, (int32_t)std::numeric_limits<uint8_t>::max());
-    return static_cast<result_type>(intermediate);
+    return detail::float_to_int_sat<result_type, FE_TONEAREST>(s);
     #endif
   }
 
@@ -258,13 +347,7 @@ struct NumericConverter<uint8_t, float, FloatRoundStyle::round_toward_zero> {
     asm volatile("cvt.rzi.sat.u8.f32 %0, %1;" : "=r"(intermediate) : "f"(s));
     return static_cast<result_type>(intermediate);
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TOWARDZERO);
-    int32_t intermediate = (int32_t)std::nearbyint(s);
-    // Low-end saturation
-    intermediate = std::max(intermediate, (int32_t)std::numeric_limits<uint8_t>::lowest());
-    // High-end saturation
-    intermediate = std::min(intermediate, (int32_t)std::numeric_limits<uint8_t>::max());
-    return static_cast<result_type>(intermediate);
+    return detail::float_to_int_sat<result_type, FE_TOWARDZERO>(s);
     #endif
   }
 
@@ -296,13 +379,7 @@ struct NumericConverter<int8_t, cutlass::half_t, FloatRoundStyle::round_to_neare
     asm volatile ("cvt.rni.sat.s8.f16 %0, %1;" : "=h"(int16) : "h"(int16_in));
     return int8[0];
     #elif !defined(__CUDACC_RTC__)
-    std::fesetround(FE_TONEAREST);
-    int32_t intermediate = (int32_t)std::nearbyint(static_cast<float>(s));
-    // Low-end saturation
-    intermediate = std::max(intermediate, (int32_t)std::numeric_limits<int8_t>::lowest());
-    // High-end saturation
-    intermediate = std::min(intermediate, (int32_t)std::numeric_limits<int8_t>::max());
-    return static_cast<result_type>(intermediate);
+    return detail::float_to_int_sat<result_type, FE_TONEAREST>(static_cast<float>(s));
     #endif
   }
 
@@ -310,6 +387,84 @@ struct NumericConverter<int8_t, cutlass::half_t, FloatRoundStyle::round_to_neare
   result_type operator()(source_type const &s) const {
     return convert(s);
   }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Partial specializations for round_to_nearest_satfinite into an integer type
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+// FloatRoundStyle::round_to_nearest_satfinite means "round to nearest even, and
+// cap the value to the minimum and the maximum of the destination type". For an
+// integer destination that is what round_to_nearest already does. Thus each
+// converter below takes the behavior of its round_to_nearest form. Without
+// these four specializations the primary NumericConverter template applies, and
+// it casts the value with no saturation and with no round to nearest.
+
+template <>
+struct NumericConverter<int32_t, float, FloatRoundStyle::round_to_nearest_satfinite>:
+  NumericConverter<int32_t, float, FloatRoundStyle::round_to_nearest> {
+  static FloatRoundStyle const round_style = FloatRoundStyle::round_to_nearest_satfinite;
+};
+
+template <>
+struct NumericConverter<int8_t, float, FloatRoundStyle::round_to_nearest_satfinite>:
+  NumericConverter<int8_t, float, FloatRoundStyle::round_to_nearest> {
+  static FloatRoundStyle const round_style = FloatRoundStyle::round_to_nearest_satfinite;
+};
+
+template <>
+struct NumericConverter<uint8_t, float, FloatRoundStyle::round_to_nearest_satfinite>:
+  NumericConverter<uint8_t, float, FloatRoundStyle::round_to_nearest> {
+  static FloatRoundStyle const round_style = FloatRoundStyle::round_to_nearest_satfinite;
+};
+
+template <>
+struct NumericConverter<int8_t, cutlass::half_t, FloatRoundStyle::round_to_nearest_satfinite>:
+  NumericConverter<int8_t, cutlass::half_t, FloatRoundStyle::round_to_nearest> {
+  static FloatRoundStyle const round_style = FloatRoundStyle::round_to_nearest_satfinite;
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Rejection of a rounding style that has no float to integer implementation
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Each partial specialization below catches a value of `Round` that the three
+// full specializations above do not hold. Without it the primary NumericConverter
+// template applies, and that template casts the source value. Such a cast
+// neither rounds as the name of the value tells nor saturates, and it is
+// undefined behavior when the value does not fit in the destination type. Thus
+// the conversion must not compile.
+
+template <FloatRoundStyle Round>
+struct NumericConverter<int32_t, float, Round> {
+  static_assert(detail::round_style_not_supported<Round>,
+    "A float to int32_t conversion holds round_to_nearest, "
+    "round_to_nearest_satfinite and round_toward_zero only.");
+};
+
+template <FloatRoundStyle Round>
+struct NumericConverter<int8_t, float, Round> {
+  static_assert(detail::round_style_not_supported<Round>,
+    "A float to int8_t conversion holds round_to_nearest, "
+    "round_to_nearest_satfinite and round_toward_zero only.");
+};
+
+template <FloatRoundStyle Round>
+struct NumericConverter<uint8_t, float, Round> {
+  static_assert(detail::round_style_not_supported<Round>,
+    "A float to uint8_t conversion holds round_to_nearest, "
+    "round_to_nearest_satfinite and round_toward_zero only.");
+};
+
+template <FloatRoundStyle Round>
+struct NumericConverter<int8_t, cutlass::half_t, Round> {
+  static_assert(detail::round_style_not_supported<Round>,
+    "A cutlass::half_t to int8_t conversion holds round_to_nearest and "
+    "round_to_nearest_satfinite only.");
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -4974,8 +5129,15 @@ struct NumericArrayConverter<float_e2m1_t, cutlass::float_e5m2_t, N, Round> {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Partial specialization for Array<int8_t> <= Array<float>
-/// Conversion is performed with saturation regardless of setting of
-/// the `Round` template parameter.
+///
+/// Conversion is performed with saturation for these three values of the
+/// `Round` template parameter, and for no other value:
+///   FloatRoundStyle::round_to_nearest
+///   FloatRoundStyle::round_to_nearest_satfinite
+///   FloatRoundStyle::round_toward_zero
+/// Each other value of `Round` selects the primary NumericConverter template,
+/// which casts the value and thus neither rounds as the name of the value tells
+/// nor saturates.
 template <
   FloatRoundStyle Round
 >
@@ -5043,6 +5205,25 @@ struct NumericArrayFP32ToIntConverter {
 
     NumericArrayConverter<int32_t, float, N, Round> compute_converter;
     temporary = compute_converter(source);
+
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 750)
+    // The int32 to T step below ends with cvt.pack.sat on sm_75 and later, and
+    // that instruction saturates. There is no such instruction on the host, and
+    // there is none on an architecture before sm_75. On those two arms the step
+    // keeps the low bits of each value only, thus this loop clamps each value
+    // first. The comment on NumericArrayConverter<int8_t, float, 1, Round>
+    // promises saturation for each form of this conversion.
+    //
+    // Complexity: O(N).
+    int32_t const lo = static_cast<int32_t>(cutlass::platform::numeric_limits<T>::lowest());
+    int32_t const hi = static_cast<int32_t>(cutlass::platform::numeric_limits<T>::max());
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < N; ++i) {
+      int32_t const v = temporary[i];
+      temporary[i] = (v < lo) ? lo : ((v > hi) ? hi : v);
+    }
+#endif
 
     // Convert to int to int8_t
     NumericArrayConverter<T, int32_t, N, Round> destination_converter;
