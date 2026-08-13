@@ -616,7 +616,10 @@ struct alignas(1) float_e4m3_t : float8_base<FloatEncoding::E4M3> {
 
     CUTLASS_HOST_DEVICE
     friend bool isnan(float_e4m3_t const& x) {
-      return x.storage == uint8_t(0x7f);
+      // E4M3 holds no infinity. Each NaN has the exponent and the mantissa at
+      // all ones, thus the two NaN codes are 0x7f and 0xff.
+      return x.exponent_biased() == int(Base::FP8_EXPONENT_MASK) &&
+             x.mantissa() == int(Base::FP8_MANTISSA_MASK);
     }
 
 };
@@ -831,7 +834,11 @@ struct alignas(1) float_e5m2_t : float8_base<FloatEncoding::E5M2> {
     
     CUTLASS_HOST_DEVICE
     friend bool isnan(float_e5m2_t const& x) {
-      return x.storage == uint8_t(0x7f);
+      // E5M2 obeys the IEEE 754 rules. Each NaN has the exponent at all ones
+      // and a mantissa that is not zero, thus the six NaN codes are 0x7d, 0x7e,
+      // 0x7f, 0xfd, 0xfe and 0xff. The exponent alone gives an infinity.
+      return x.exponent_biased() == int(Base::FP8_EXPONENT_MASK) &&
+             x.mantissa() != 0;
     }
 
 };
@@ -1134,7 +1141,10 @@ struct float_ue4m3_t : public float_exmy_base<cutlass::detail::FpEncoding::UE4M3
 
   CUTLASS_HOST_DEVICE
   friend bool isnan(float_ue4m3_t const& x) {
-    return x.storage == uint8_t(0x7f);
+    // UE4M3 is unsigned, thus bit 7 is not part of the encoding and the
+    // conversion to float ignores it. The stored bytes 0x7f and 0xff both
+    // decode to a NaN.
+    return (x.storage & uint8_t(0x7f)) == uint8_t(0x7f);
   }
 
 };
@@ -1431,10 +1441,11 @@ public:
   static bool const is_signed = true;
   static bool const is_integer = false;
   static bool const is_exact = false;
-  static bool const has_quiet_NaN = true;
+  static bool const has_quiet_NaN = type::Base::BitRepresentation::HAS_NAN;
   static bool const has_signaling_NaN = false;
-  static bool const has_denorm_loss = true;
-  static cutlass::platform::float_denorm_style const has_denorm = cutlass::platform::denorm_present;
+  static bool const has_denorm_loss = type::Base::BitRepresentation::HAS_DENORM;
+  static cutlass::platform::float_denorm_style const has_denorm = type::Base::BitRepresentation::HAS_DENORM
+      ? cutlass::platform::denorm_present : cutlass::platform::denorm_absent;
   static cutlass::platform::float_round_style const round_style = cutlass::platform::round_to_nearest;
   static bool const is_iec559 = false;
   static bool const is_bounded = true;
@@ -1460,11 +1471,11 @@ public:
 
   /// Returns quiet NaN value
   CUTLASS_HOST_DEVICE
-  static type quiet_NaN() { return type::bitcast(type::Base::BitRepresentation::INF_MASK); }
+  static type quiet_NaN() { return type::bitcast(type::Base::BitRepresentation::NAN_MASK); }
 
   /// Returns signaling NaN value
   CUTLASS_HOST_DEVICE
-  static type signaling_NaN() { return type::bitcast(type::Base::BitRepresentation::INF_MASK); }
+  static type signaling_NaN() { return type::bitcast(type::Base::BitRepresentation::NAN_MASK); }
 
   /// Returns smallest positive subnormal value
   CUTLASS_HOST_DEVICE
@@ -1478,8 +1489,20 @@ struct numeric_limits<cutlass::float_ue8m0_t> :
   static bool const has_infinity = false;
   static bool const is_signed = false;
 
-  /// Minimum finite value
-  static cutlass::float_ue8m0_t lowest() { return cutlass::float_ue8m0_t::bitcast(0xfe); }
+  /// Minimum finite value. E8M0 is unsigned, thus its minimum is 2^-127.
+  static cutlass::float_ue8m0_t lowest() {
+    return cutlass::float_ue8m0_t::bitcast(cutlass::float_ue8m0_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// Least positive value. E8M0 holds no zero, thus 0x00 is the smallest value.
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue8m0_t min() {
+    return cutlass::float_ue8m0_t::bitcast(cutlass::float_ue8m0_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// E8M0 holds no mantissa bit, thus it holds no subnormal. Returns min().
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue8m0_t denorm_min() { return min(); }
 
   /// Machine epsilon, that is, the difference between 1.0 and the next representable value (2^0)
   static cutlass::float_ue8m0_t epsilon() { return cutlass::float_ue8m0_t::bitcast(0x7f); }
@@ -1587,10 +1610,11 @@ public:
   static bool const is_signed = true;
   static bool const is_integer = false;
   static bool const is_exact = false;
-  static bool const has_quiet_NaN = true;
+  static bool const has_quiet_NaN = type::Base::BitRepresentation::HAS_NAN;
   static bool const has_signaling_NaN = false;
-  static bool const has_denorm_loss = true;
-  static cutlass::platform::float_denorm_style const has_denorm = cutlass::platform::denorm_present;
+  static bool const has_denorm_loss = type::Base::BitRepresentation::HAS_DENORM;
+  static cutlass::platform::float_denorm_style const has_denorm = type::Base::BitRepresentation::HAS_DENORM
+      ? cutlass::platform::denorm_present : cutlass::platform::denorm_absent;
   static cutlass::platform::float_round_style const round_style = cutlass::platform::round_to_nearest;
   static bool const is_iec559 = false;
   static bool const is_bounded = true;
@@ -1616,11 +1640,11 @@ public:
 
   /// Returns quiet NaN value
   CUTLASS_HOST_DEVICE
-  static type quiet_NaN() { return type::bitcast(type::Base::BitRepresentation::INF_MASK); }
+  static type quiet_NaN() { return type::bitcast(type::Base::BitRepresentation::NAN_MASK); }
 
   /// Returns signaling NaN value
   CUTLASS_HOST_DEVICE
-  static type signaling_NaN() { return type::bitcast(type::Base::BitRepresentation::INF_MASK); }
+  static type signaling_NaN() { return type::bitcast(type::Base::BitRepresentation::NAN_MASK); }
 
   /// Returns smallest positive subnormal value
   CUTLASS_HOST_DEVICE
@@ -1634,8 +1658,20 @@ struct numeric_limits<cutlass::float_ue8m0_t> :
   static bool const has_infinity = false;
   static bool const is_signed = false;
 
-  /// Minimum finite value
-  static cutlass::float_ue8m0_t lowest() { return cutlass::float_ue8m0_t::bitcast(0xfe); }
+  /// Minimum finite value. E8M0 is unsigned, thus its minimum is 2^-127.
+  static cutlass::float_ue8m0_t lowest() {
+    return cutlass::float_ue8m0_t::bitcast(cutlass::float_ue8m0_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// Least positive value. E8M0 holds no zero, thus 0x00 is the smallest value.
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue8m0_t min() {
+    return cutlass::float_ue8m0_t::bitcast(cutlass::float_ue8m0_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// E8M0 holds no mantissa bit, thus it holds no subnormal. Returns min().
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue8m0_t denorm_min() { return min(); }
 
   /// Machine epsilon, that is, the difference between 1.0 and the next representable value (2^0)
   static cutlass::float_ue8m0_t epsilon() { return cutlass::float_ue8m0_t::bitcast(0x7f); }
