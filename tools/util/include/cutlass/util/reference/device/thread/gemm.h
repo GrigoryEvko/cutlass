@@ -35,6 +35,8 @@
 #pragma once
 
 #include "cutlass/coord.h"
+#include "cutlass/functional.h"
+#include "cutlass/numeric_conversion.h"
 #include "cutlass/tensor_view.h"
 #include "cutlass/gemm/gemm.h"
 
@@ -69,14 +71,18 @@ struct Gemm {
   // Data members
   //
 
-  /// Tile for A operand
-  ElementA A_tile[OutputTile::kColumn];
+  // The thread covers OutputTile::kRow rows and OutputTile::kColumn columns of
+  // the output. kernel::Gemm gives each thread the same extent, thus the two
+  // files must use the same convention. The first index is always the row.
 
-  /// Tile for B operand
-  ElementB B_tile[OutputTile::kRow];
+  /// Tile for A operand. The index is the row offset in the output tile.
+  ElementA A_tile[OutputTile::kRow];
 
-  /// Tile for Accumulator
-  AccumulatorType accum[OutputTile::kColumn][OutputTile::kRow];
+  /// Tile for B operand. The index is the column offset in the output tile.
+  ElementB B_tile[OutputTile::kColumn];
+
+  /// Tile for Accumulator. The first index is the row offset.
+  AccumulatorType accum[OutputTile::kRow][OutputTile::kColumn];
 
   //
   // Methods
@@ -87,20 +93,20 @@ struct Gemm {
   Gemm(AccumulatorType initial_accum = AccumulatorType(0)) {
 
     // Clear fetch registers
-    for (int i = 0; i < OutputTile::kColumn; ++i) {
+    for (int i = 0; i < OutputTile::kRow; ++i) {
       A_tile[i] = ElementA(0);
     }
 
-    for (int j = 0; j < OutputTile::kRow; ++j) {
+    for (int j = 0; j < OutputTile::kColumn; ++j) {
       B_tile[j] = ElementB(0);
     }
 
     // Clear accumulators
     CUTLASS_PRAGMA_UNROLL
-    for (int j = 0; j < OutputTile::kColumn; ++j) {
+    for (int i = 0; i < OutputTile::kRow; ++i) {
       CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < OutputTile::kRow; ++i) {
-        accum[j][i] = initial_accum;
+      for (int j = 0; j < OutputTile::kColumn; ++j) {
+        accum[i][j] = initial_accum;
       }
     }
   }
@@ -121,7 +127,7 @@ struct Gemm {
 
       // Fetch a slice of the A matrix
       CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < OutputTile::kColumn; ++i) {
+      for (int i = 0; i < OutputTile::kRow; ++i) {
         if (output_coord.row() + i < problem_size.m()) {
           A_tile[i] = tensor_a.at(make_Coord(output_coord.row() + i, k));
         }
@@ -129,7 +135,7 @@ struct Gemm {
 
       // Fetch a slice of the B matrix
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < OutputTile::kRow; ++j) {
+      for (int j = 0; j < OutputTile::kColumn; ++j) {
         if (output_coord.column() + j < problem_size.n()) {
           B_tile[j] = tensor_b.at(make_Coord(k, output_coord.column() + j));
         }
@@ -137,10 +143,10 @@ struct Gemm {
 
       // Compute an accumulated matrix product
       CUTLASS_PRAGMA_UNROLL
-      for (int j = 0; j < OutputTile::kRow; ++j) {
+      for (int i = 0; i < OutputTile::kRow; ++i) {
         CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < OutputTile::kColumn; ++i) {
-          accum[j][i] = inner_product_op(A_tile[i], B_tile[j], accum[j][i]);
+        for (int j = 0; j < OutputTile::kColumn; ++j) {
+          accum[i][j] = inner_product_op(A_tile[i], B_tile[j], accum[i][j]);
         }
       }
     }
@@ -161,13 +167,13 @@ struct Gemm {
     ConvertOp convert_op;
     
     // Update the output tensor
-    for (int j = 0; j < OutputTile::kRow; ++j) {
-      for (int i = 0; i < OutputTile::kColumn; ++i) {
+    for (int i = 0; i < OutputTile::kRow; ++i) {
+      for (int j = 0; j < OutputTile::kColumn; ++j) {
         MatrixCoord coord = output_coord + MatrixCoord(i, j);
         if (coord.row() < problem_size.m() && coord.column() < problem_size.n()) {
 
           tensor_d.at(coord) = convert_op(
-            alpha * ScalarType(accum[j][i]) +
+            alpha * ScalarType(accum[i][j]) +
             beta * ScalarType(tensor_c.at(coord))
           );
         }

@@ -123,7 +123,10 @@ struct TensorMREFunc {
     Element lhs_ = lhs.at(coord);
     Element rhs_ = rhs.at(coord);
 
-    sum += std::abs(double(lhs_) - double(rhs_) / (double(rhs_) + epsilon));
+    // The relative error of one element is |lhs - rhs| / (|rhs| + epsilon). The
+    // epsilon term keeps the quotient finite when rhs is zero. The absolute
+    // value on the denominator keeps the quotient positive for a negative rhs.
+    sum += std::abs(double(lhs_) - double(rhs_)) / (std::abs(double(rhs_)) + epsilon);
     ++count;
   }
 
@@ -457,7 +460,7 @@ bool TensorRelativelyEquals(
     return false;
   }
 
-  detail::TensorEqualsFunc<Element, Layout> imag_func(
+  detail::TensorRelativelyEqualsFunc<Element, Layout> imag_func(
     {lhs.data() + lhs.imaginary_stride(), lhs.layout(), lhs.extent()},
     {rhs.data() + rhs.imaginary_stride(), rhs.layout(), rhs.extent()},
     epsilon,

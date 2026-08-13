@@ -39,6 +39,7 @@
 
 // Cutlass includes
 #include "cutlass/cutlass.h"
+#include "cutlass/tensor_view.h"
 #include "tensor_foreach.h"
 
 namespace cutlass {

@@ -33,6 +33,8 @@
 */
 #pragma once
 
+#include "cutlass/numeric_conversion.h"
+
 #include <cute/tensor.hpp>
 
 namespace cutlass::reference::device {

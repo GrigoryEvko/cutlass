@@ -40,6 +40,8 @@
 #include "cutlass/functional.h"
 #include "cutlass/numeric_conversion.h"
 
+#include "cutlass/arch/mma.h"
+#include "cutlass/matrix_shape.h"
 #include "cutlass/tensor_view.h"
 #include "cutlass/gemm/gemm.h"
 

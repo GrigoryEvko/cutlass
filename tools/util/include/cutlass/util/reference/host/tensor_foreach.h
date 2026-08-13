@@ -32,6 +32,7 @@
 
 #include <stdexcept>
 #include "cutlass/cutlass.h"
+#include "cutlass/coord.h"
 
 namespace cutlass  {
 namespace reference {
