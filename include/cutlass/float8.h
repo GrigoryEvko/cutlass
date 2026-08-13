@@ -1471,6 +1471,24 @@ public:
   static type denorm_min() { return type::bitcast(0x01); }
 };
 
+/// Numeric limits for float_ue4m3_t
+template <>
+struct numeric_limits<cutlass::float_ue4m3_t> :
+    public float8_exmy_numeric_limits<cutlass::float_ue4m3_t> {
+  static bool const has_infinity = false;
+  static bool const is_signed = false;
+
+  /// Minimum finite value. UE4M3 is unsigned, thus its minimum is 0.
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue4m3_t lowest() {
+    return cutlass::float_ue4m3_t::bitcast(cutlass::float_ue4m3_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// Machine epsilon, that is, the difference between 1.0 and the next representable value
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue4m3_t epsilon() { return cutlass::float_ue4m3_t::bitcast(0x20); }
+};
+
 /// Numeric limits for float_ue8m0_t
 template <>
 struct numeric_limits<cutlass::float_ue8m0_t> :
@@ -1625,6 +1643,24 @@ public:
   /// Returns smallest positive subnormal value
   CUTLASS_HOST_DEVICE
   static type denorm_min() { return type::bitcast(0x01); }
+};
+
+/// Numeric limits for float_ue4m3_t
+template <>
+struct numeric_limits<cutlass::float_ue4m3_t> :
+    public float8_exmy_numeric_limits<cutlass::float_ue4m3_t> {
+  static bool const has_infinity = false;
+  static bool const is_signed = false;
+
+  /// Minimum finite value. UE4M3 is unsigned, thus its minimum is 0.
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue4m3_t lowest() {
+    return cutlass::float_ue4m3_t::bitcast(cutlass::float_ue4m3_t::Base::BitRepresentation::MIN_VALUE);
+  }
+
+  /// Machine epsilon, that is, the difference between 1.0 and the next representable value
+  CUTLASS_HOST_DEVICE
+  static cutlass::float_ue4m3_t epsilon() { return cutlass::float_ue4m3_t::bitcast(0x20); }
 };
 
 /// Numeric limits for float_ue8m0_t

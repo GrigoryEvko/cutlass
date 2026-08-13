@@ -411,7 +411,10 @@ public:
   static constexpr bool HAS_NAN = (NAN_TYPE != NanInfEncoding::NONE);
 
   static constexpr bool HAS_DENORM = (NumMantissaBits > 0);
-  static constexpr bool HAS_NORMAL = !HAS_DENORM;
+  // A format holds normal values when it holds at least one exponent bit.
+  // A format can hold both normal values and subnormal values, thus this
+  // constant is not the negation of HAS_DENORM.
+  static constexpr bool HAS_NORMAL = (NumExpBits > 0);
 
   static constexpr uint32_t NUM_BITS = NumBits;
   static constexpr uint32_t NUM_EXPONENT_BITS = NumExpBits;
