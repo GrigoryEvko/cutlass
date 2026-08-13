@@ -363,6 +363,15 @@ abs(ScaledBasis<T,Ns...> const& e)
   return ScaledBasis<decltype(t),Ns...>{t};
 }
 
+template <class T, int... Ns>
+CUTE_HOST_DEVICE constexpr
+auto
+negative_part(ScaledBasis<T,Ns...> const& e)
+{
+  auto t = negative_part(e.value());
+  return ScaledBasis<decltype(t),Ns...>{t};
+}
+
 // Equality
 template <class T, int... Ns, class U, int... Ms>
 CUTE_HOST_DEVICE constexpr

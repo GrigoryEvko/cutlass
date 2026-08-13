@@ -373,6 +373,7 @@ operator||(U, C<t>) {
   }
 
 CUTE_NAMED_UNARY_FN(abs);
+CUTE_NAMED_UNARY_FN(negative_part);
 CUTE_NAMED_UNARY_FN(signum);
 CUTE_NAMED_UNARY_FN(has_single_bit);
 

@@ -74,6 +74,21 @@ abs(T const& t) {
   CUTE_GCC_UNREACHABLE;
 }
 
+// Returns the negative part of t, that is min(0, t). The result is zero or less.
+template <class T,
+          __CUTE_REQUIRES(is_arithmetic<T>::value)>
+CUTE_HOST_DEVICE constexpr
+auto
+negative_part(T const& t) {
+  if constexpr (is_signed<T>::value) {
+    return t < T(0) ? t : T(0);
+  } else {
+    return T(0);
+  }
+
+  CUTE_GCC_UNREACHABLE;
+}
+
 // Returns 1 if x > 0, -1 if x < 0, and 0 if x is zero.
 template <class T,
           __CUTE_REQUIRES(is_arithmetic<T>::value)>

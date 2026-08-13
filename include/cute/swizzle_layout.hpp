@@ -165,13 +165,63 @@ get_nonswizzle_portion(Layout<Shape,Stride> const& slayout)
   return slayout;
 }
 
+namespace detail {
+
+// Return each bit that a value in [0, n) can hold, that is bit_ceil(n) - 1
+// @pre  n >= 1
+// @post x <= bit_mask_below(n) and (x & ~bit_mask_below(n)) == 0 for each x in [0, n)
+template <class N>
+CUTE_HOST_DEVICE constexpr
+auto
+bit_mask_below(N const& n)
+{
+  if constexpr (is_static<N>::value) {
+    return Int<int(uint32_t(1) << bit_width(uint32_t(N::value - 1))) - 1>{};
+  } else {
+    return int(uint32_t(1) << bit_width(uint32_t(n - 1))) - 1;
+  }
+
+  CUTE_GCC_UNREACHABLE;
+}
+
+} // end namespace detail
+
+// Return the codomain shape of a Swizzled ComposedLayout
+// The layout maps a coordinate c to Swizzle(offset + layout_b(c)). Thus the offset and
+// the Swizzle both take part in the codomain, and cosize(layout_b) alone does not bound it.
+// Let hi = offset + cosize(layout_b) - 1, thus each index x that (offset + layout_b)
+// emits is in [0, hi]. A Swizzle<B,M,S> alters only the bits in [M, M+B+abs(S)), thus it
+// keeps the block index x / blk with blk = 2^(M+B+abs(S)) and permutes x % blk inside
+// its own block. As a result:
+//   - each x with a block index less than hi / blk stays under (hi / blk) * blk
+//   - each x with the block index hi / blk has x % blk in [0, hi % blk]
+// Inside the last block, the bits of x % blk are a subset of the bits of full, and the
+// Swizzle flips only bits that are a subset of flip. Thus (full | flip) bounds the last
+// block, and the sum of the two parts bounds the codomain.
+// The bound is exact for each Swizzle and shared memory layout that CUTLASS builds.
+// @pre  The layout_b of @a layout has no negative stride and the offset is not negative,
+//       thus offset + layout_b(c) >= 0 for each c. Refer to co_min in layout.hpp.
+// @post size(coshape(@a layout)) == cosize(@a layout)
+template <int... Is, int B, int M, int S, class Offset, class LayoutB>
+CUTE_HOST_DEVICE constexpr
+auto
+coshape(ComposedLayout<Swizzle<B,M,S>,Offset,LayoutB> const& layout)
+{
+  auto hi   = layout.offset() + cosize<Is...>(layout.layout_b()) - Int<1>{};
+  auto blk  = Int<(1 << (M + B + abs(S)))>{};
+  auto full = detail::bit_mask_below(hi % blk + Int<1>{});
+  auto flip = shiftr(full & typename Swizzle<B,M,S>::yyy_msk{},
+                            typename Swizzle<B,M,S>::msk_sft{});
+  return (hi / blk) * blk + (full | flip) + Int<1>{};
+}
+
 // Return the codomain size of a Swizzled ComposedLayout
 template <int... Is, int B, int M, int S, class Offset, class LayoutB>
 CUTE_HOST_DEVICE constexpr
 auto
 cosize(ComposedLayout<Swizzle<B,M,S>,Offset,LayoutB> const& layout)
 {
-  return cosize<Is...>(layout.layout_b());
+  return size(coshape<Is...>(layout));
 }
 
 //

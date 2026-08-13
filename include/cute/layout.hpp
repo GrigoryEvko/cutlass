@@ -638,10 +638,27 @@ coprofile(Layout<Shape,Stride> const& layout)
   return repeat_like(as_arithmetic_tuple(sum(stride<Is...>(layout))), Int<0>{});
 }
 
+// Return the lowest index of the codomain of a mode
+// The result is zero when no stride of @a sub_layout is negative.
+// @post co_min(@a layout) <= @a sub_layout(c) for all c < size(@a sub_layout)
+//       where @a sub_layout = get<Is...>(layout).
+template <int... Is, class Shape, class Stride>
+CUTE_HOST_DEVICE constexpr
+auto
+co_min(Layout<Shape,Stride> const& layout)
+{
+  auto m1_shapes   = transform_leaf( shape<Is...>(layout), [](auto s) { return s - Int<1>{}; });
+  auto neg_strides = transform_leaf(stride<Is...>(layout), negative_part_fn{});
+  return as_arithmetic_tuple(inner_product(m1_shapes, neg_strides));
+}
+
 // Return the codomain shape of a mode
+// coshape gives the SPAN of the codomain and not its upper bound. Where a stride is
+// negative the codomain does not start at zero. Refer to co_min.
 // @post size(coshape(@a layout)) == cosize(@a layout)
 // @return C Coordinate with smallest elements such that
-//           elem_less(@a sub_layout(c), C) for all c < size(@a sub_layout)
+//           elem_less(@a sub_layout(c) - co_min(@a layout), C)
+//           for all c < size(@a sub_layout)
 //           where @a sub_layout = get<Is...>(layout).
 template <int... Is, class Shape, class Stride>
 CUTE_HOST_DEVICE constexpr
@@ -656,8 +673,10 @@ coshape(Layout<Shape,Stride> const& layout)
 
 // Return the codomain size of a mode
 // @return M smallest integer such that
-//           size(@a sub_layout(c)) < M for all c < size(@a sub_layout)
+//           @a sub_layout(c) < co_min(@a layout) + M for all c < size(@a sub_layout)
 //           where @a sub_layout = get<Is...>(layout).
+//           M is the smallest bound that starts at zero only when co_min is zero,
+//           that is only when no stride of @a sub_layout is negative.
 template <int... Is, class Shape, class Stride>
 CUTE_HOST_DEVICE constexpr
 auto

@@ -38,6 +38,7 @@ cutlass_test_unit_add_executable(
   composition.cpp
   constants.cpp
   core_unit.cpp
+  cosize.cpp
   domain_distribute.cpp
   int_tuple.cpp
   inverse_left.cpp
