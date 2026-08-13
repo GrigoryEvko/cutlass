@@ -612,7 +612,25 @@ unflatten_impl(FlatTuple const& flat_tuple, TargetProfile const& target_profile)
       return cute::make_tuple(append(result, sub_result), sub_tuple);
     });
   } else {
-    return cute::make_tuple(get<0>(flat_tuple), take<1, decltype(rank(flat_tuple))::value>(flat_tuple));
+    // A target profile that is a leaf takes one leaf from flat_tuple and keeps
+    // the remainder.
+    //   Do NOT write rank(flat_tuple) or get<0>(flat_tuple) here. cute::rank and
+    //   the get<0> overload for an integer live in int_tuple.hpp, and
+    //   int_tuple.hpp includes this file at its own line 38. Thus each of the two
+    //   names is declared after this point of definition, in every translation
+    //   unit, and no include order corrects it. A cute type carries namespace
+    //   cute as an associated namespace and argument dependent lookup finds the
+    //   two names. A built-in integer has no associated namespace, thus
+    //   unflatten(flatten(v), profile) was a hard compile error for a runtime
+    //   scalar v, although the two pre-conditions below both hold for it.
+    // tuple_size, take and the get<0> overload for a tuple are all declared
+    // before this line.
+    if constexpr (is_tuple<FlatTuple>::value) {
+      return cute::make_tuple(cute::get<0>(flat_tuple),
+                              take<1, tuple_size<FlatTuple>::value>(flat_tuple));
+    } else {
+      return cute::make_tuple(flat_tuple, cute::make_tuple());
+    }
   }
 
   CUTE_GCC_UNREACHABLE;

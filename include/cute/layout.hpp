@@ -255,7 +255,12 @@ struct Layout
 
   // Return the (flat) ND logical coordinate corresponding to the linear index
   // @post crd2idx(@a result, shape(), stride()) == idx
-  // @post rank(@a result) == rank(shape()) && depth(@a result) == 1
+  // @post rank(@a result) == rank(shape())
+  // @post depth(@a result) == 1, for a layout of rank 2 or more.
+  //   For a layout of rank 1 the result is a bare integer and its depth is 0,
+  //   because repeat<1>(Int<1>{}) gives Int<1>{} and not a rank-1 tuple. Then
+  //   crd2crd sees a destination that is not a tuple and returns an integer.
+  //   Refer to the special case at tuple_algorithms.hpp:739.
   template <class IInt,
             __CUTE_REQUIRES(is_integral<IInt>::value)>
   CUTE_HOST_DEVICE constexpr
