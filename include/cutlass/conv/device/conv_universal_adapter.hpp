@@ -294,7 +294,9 @@ public:
     // configure smem size and carveout
     int smem_size = ConvKernel::SharedStorageSize;
 
-    Status launch_result;
+    // An arch tag that no dispatch arm handles must never report success.
+    // Thus the initial value is an error, and each launch path overwrites it.
+    Status launch_result = Status::kErrorNotSupported;
     // Use extended launch API only for mainloops that use it
     if constexpr (ConvKernel::ArchTag::kMinComputeCapability >= 90) {
       [[maybe_unused]] constexpr bool is_static_1x1x1 =
@@ -349,20 +351,26 @@ public:
                 grid, cluster, block, smem_size, stream, kernel, kernel_params);
           }
         }
+        else if constexpr (ConvKernel::ArchTag::kMinComputeCapability == 101) {
+          launch_result = ClusterLauncher::launch_with_fallback_cluster(
+            grid,
+            cluster,
+            fallback_cluster,
+            block,
+            smem_size,
+            stream,
+            kernel,
+            kernel_params);
+        }
         else {
-          if constexpr (ConvKernel::ArchTag::kMinComputeCapability == 100 ||
-                        ConvKernel::ArchTag::kMinComputeCapability == 101
-                        ) { 
-            launch_result = ClusterLauncher::launch_with_fallback_cluster(
-              grid,
-              cluster,
-              fallback_cluster,
-              block,
-              smem_size,
-              stream,
-              kernel,
-              kernel_params);
-          }
+          // Sm103 and Sm120 come here. The fallback cluster above is set for
+          // Sm100 and Sm101 only, thus this arm supports a static unit cluster
+          // only. A larger cluster is a compile error and never a silent no-op.
+          static_assert(is_static_1x1x1,
+            "ConvUniversalAdapter::run(): this ArchTag supports a static 1x1x1 "
+            "ClusterShape only, because the adapter sets no fallback cluster for it.");
+          device_kernel<ConvKernel><<<grid, block, smem_size, stream>>>(params);
+          launch_result = Status::kSuccess;
         }
       }
     }
