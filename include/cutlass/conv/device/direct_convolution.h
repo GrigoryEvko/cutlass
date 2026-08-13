@@ -38,6 +38,7 @@
 
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"
+#include "cutlass/cuda_host_adapter.hpp"
 #include "cutlass/conv/convolution.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -80,7 +81,9 @@ public:
   static cutlass::conv::StrideSupport const kStrideSupport = UnderlyingKernel::kStrideSupport;
   static cutlass::conv::GroupMode const kGroupMode = UnderlyingKernel::kGroupMode;
 
-  static int const kWarpCount = 
+  static bool const kEnableCudaHostAdapter = CUTLASS_ENABLE_CUDA_HOST_ADAPTER;
+
+  static int const kWarpCount =
     (ThreadblockShape::kM / WarpShape::kM) * 
     (ThreadblockShape::kN / WarpShape::kN) *
     (ThreadblockShape::kK / WarpShape::kK);
@@ -204,15 +207,35 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(cudaStream_t stream = nullptr) {
+  Status run(cudaStream_t stream = nullptr, CudaHostAdapter *cuda_adapter = nullptr, int32_t kernel_index = 0) {
+
+    cutlass::Status launch_result = cutlass::Status::kSuccess;
 
     // Launch reorder kernel
     if (params_.ptr_reordered_B != nullptr) {
       dim3 grid = ReorderKernel::get_grid_shape(params_);
       dim3 block = ReorderKernel::get_block_shape();
 
-      cutlass::arch::synclog_setup();
-      cutlass::Kernel<ReorderKernel><<<grid, block, 0, stream>>>(params_);
+      if constexpr (kEnableCudaHostAdapter) {
+        CUTLASS_ASSERT(cuda_adapter);
+        if (cuda_adapter) {
+          void* kernel_params[] = {&params_};
+          launch_result = cuda_adapter->launch(
+              grid, dim3(1,1,1), block, 0, stream, kernel_params, kernel_index
+              );
+        }
+        else {
+          return Status::kErrorInternal;
+        }
+      }
+      else {
+        cutlass::arch::synclog_setup();
+        cutlass::Kernel<ReorderKernel><<<grid, block, 0, stream>>>(params_);
+      }
+
+      if (Status::kSuccess != launch_result) {
+        return Status::kErrorInternal;
+      }
     }
 
     // Launch main kernel
@@ -224,35 +247,52 @@ public:
     // Dynamic SMEM size based on input params.
     int smem_size = int(params_.get_smem_size());
 
-    // Make sure we can use that much shared memory.
-    cudaError_t status = 
-        cudaFuncSetAttribute(cutlass::Kernel<UnderlyingKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
-    if (status != cudaSuccess)
-      return Status::kErrorInternal;
+    if constexpr (kEnableCudaHostAdapter) {
+      CUTLASS_ASSERT(cuda_adapter);
+      if (cuda_adapter) {
+        void* kernel_params[] = {&params_};
+        launch_result = cuda_adapter->launch(
+            grid, dim3(1,1,1), block, smem_size, stream, kernel_params, kernel_index
+            );
+      }
+      else {
+        return Status::kErrorInternal;
+      }
+    }
+    else {
+      // Make sure we can use that much shared memory.
+      cudaError_t status =
+          cudaFuncSetAttribute(cutlass::Kernel<UnderlyingKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+      if (status != cudaSuccess)
+        return Status::kErrorInternal;
 
-    cutlass::arch::synclog_setup();
-    cutlass::Kernel<UnderlyingKernel><<<grid, block, smem_size, stream>>>(params_);
+      cutlass::arch::synclog_setup();
+      cutlass::Kernel<UnderlyingKernel><<<grid, block, smem_size, stream>>>(params_);
+    }
 
     cudaError_t result = cudaGetLastError();
 
-    return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
+    return (result == cudaSuccess && Status::kSuccess == launch_result)
+             ? Status::kSuccess : Status::kErrorInternal;
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(cudaStream_t stream = nullptr) {
-    return run(stream);
+  Status operator()(cudaStream_t stream = nullptr, CudaHostAdapter *cuda_adapter = nullptr, int32_t kernel_index = 0) {
+    return run(stream, cuda_adapter, kernel_index);
   }
 
   /// Runs the kernel using initialized state.
   Status operator()(
-    Arguments const &args, 
-    void *workspace = nullptr, 
-    cudaStream_t stream = nullptr) {
-    
+    Arguments const &args,
+    void *workspace = nullptr,
+    cudaStream_t stream = nullptr,
+    CudaHostAdapter *cuda_adapter = nullptr,
+    int32_t kernel_index = 0) {
+
     Status status = initialize(args, workspace, stream);
-    
+
     if (status == Status::kSuccess) {
-      status = run(stream);
+      status = run(stream, cuda_adapter, kernel_index);
     }
 
     return status;

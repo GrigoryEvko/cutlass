@@ -38,6 +38,7 @@
 
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"
+#include "cutlass/cuda_host_adapter.hpp"
 #include "cutlass/conv/convolution.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -82,7 +83,9 @@ public:
   static cutlass::conv::Operator const kConvolutionalOperator = ImplicitGemmFusionKernel::kConvolutionalOperator;
   static cutlass::conv::IteratorAlgorithm const kIteratorAlgorithm = ImplicitGemmFusionKernel::kIteratorAlgorithm;
 
-  static int const kWarpCount = 
+  static bool const kEnableCudaHostAdapter = CUTLASS_ENABLE_CUDA_HOST_ADAPTER;
+
+  static int const kWarpCount =
     (ThreadblockShape::kM / WarpShape::kM) * 
     (ThreadblockShape::kN / WarpShape::kN) *
     (ThreadblockShape::kK / WarpShape::kK);
@@ -222,7 +225,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(cudaStream_t stream = nullptr) {
+  Status run(cudaStream_t stream = nullptr, CudaHostAdapter *cuda_adapter = nullptr, int32_t kernel_index = 0) {
 
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -230,30 +233,51 @@ public:
     dim3 block(32 * kWarpCount, 1, 1);
 
     int smem_size = int(sizeof(typename ImplicitGemmFusionKernel::SharedStorage));
+    cutlass::Status launch_result = cutlass::Status::kSuccess;
 
-    cutlass::arch::synclog_setup();
-    cutlass::Kernel<ImplicitGemmFusionKernel><<<grid, block, smem_size, stream>>>(params_);
+    if constexpr (kEnableCudaHostAdapter) {
+      //
+      // Use the cuda host adapter
+      //
+      CUTLASS_ASSERT(cuda_adapter);
+      if (cuda_adapter) {
+        void* kernel_params[] = {&params_};
+        launch_result = cuda_adapter->launch(
+            grid, dim3(1,1,1), block, smem_size, stream, kernel_params, kernel_index
+            );
+      }
+      else {
+        launch_result = Status::kErrorInternal;
+      }
+    }
+    else {
+      cutlass::arch::synclog_setup();
+      cutlass::Kernel<ImplicitGemmFusionKernel><<<grid, block, smem_size, stream>>>(params_);
+    }
 
     cudaError_t result = cudaGetLastError();
 
-    return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
+    return (result == cudaSuccess && Status::kSuccess == launch_result)
+             ? Status::kSuccess : Status::kErrorInternal;
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(cudaStream_t stream = nullptr) {
-    return run(stream);
+  Status operator()(cudaStream_t stream = nullptr, CudaHostAdapter *cuda_adapter = nullptr, int32_t kernel_index = 0) {
+    return run(stream, cuda_adapter, kernel_index);
   }
 
   /// Runs the kernel using initialized state.
   Status operator()(
-    Arguments const &args, 
-    void *workspace = nullptr, 
-    cudaStream_t stream = nullptr) {
-    
+    Arguments const &args,
+    void *workspace = nullptr,
+    cudaStream_t stream = nullptr,
+    CudaHostAdapter *cuda_adapter = nullptr,
+    int32_t kernel_index = 0) {
+
     Status status = initialize(args, workspace, stream);
-    
+
     if (status == Status::kSuccess) {
-      status = run(stream);
+      status = run(stream, cuda_adapter, kernel_index);
     }
 
     return status;
