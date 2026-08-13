@@ -346,12 +346,16 @@ struct reciprocal_approximate_ftz <float> {
     #if defined(__CUDA_ARCH__)
       asm volatile ("rcp.approx.ftz.f32 %0, %1;\n" : "=f"(ret) : "f"(lhs));
     #else
+      // The device arm is rcp.approx.ftz.f32. The PTX ftz rule replaces a
+      // subnormal with a zero that keeps the sign of that subnormal. Thus the
+      // host arm must keep the sign too. A bare 0.0f gives +Inf for each
+      // negative subnormal input, where the device gives -Inf.
       if (std::fpclassify(lhs) == FP_SUBNORMAL) {
-        lhs = 0.0f;
+        lhs = std::copysign(0.0f, lhs);
       }
       ret = 1.0f / lhs;
       if (std::fpclassify(ret) == FP_SUBNORMAL) {
-        ret = 0.0f;
+        ret = std::copysign(0.0f, ret);
       }
     #endif
     return ret;

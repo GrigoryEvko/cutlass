@@ -744,6 +744,56 @@ struct NumericConverter<cutlass::tfloat32_t, float, FloatRoundStyle::round_towar
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 //
+// Partial specialization for float_ue8m0_t <= float with round toward zero
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// float_ue8m0_t::convert_from_float takes no FloatRoundStyle. Its device arm is
+/// cvt.rp and its host arm adds one to the exponent whenever the mantissa is not
+/// zero, thus it always rounds up. The generic NumericConverter does
+/// static_cast, thus it reaches that encoder and drops the round style. The
+/// array converters do honour round toward zero, thus without this
+/// specialization the scalar spelling and the array spelling disagree for every
+/// input whose mantissa is not zero. Each disagreement is one exponent step,
+/// which is a factor of two in an MXFP block scale.
+template <>
+struct NumericConverter<float_ue8m0_t, float, FloatRoundStyle::round_toward_zero> {
+  using result_type = float_ue8m0_t;
+  using source_type = float;
+  static FloatRoundStyle const round_style = FloatRoundStyle::round_toward_zero;
+
+  CUTLASS_HOST_DEVICE
+  static result_type convert(source_type const & s) {
+
+  #if defined(CUDA_PTX_UE8M0_CVT_ENABLED)
+    uint16_t out;
+    asm volatile("{ cvt.rz.satfinite.ue8m0x2.f32 %0, 0.0, %1; }"
+                 : "=h"(out) : "f"(s));
+    return result_type::bitcast(static_cast<uint8_t>(out & 0xffu));
+  #else
+    // UE8M0 holds no mantissa, thus round toward zero keeps the biased exponent
+    // field of the source. The sign has no effect, because UE8M0 is unsigned.
+    // satfinite gives the maximum finite code for an infinity, and gives the
+    // NaN code for a NaN. This arm agrees with the instruction above for all
+    // 4294967296 FP32 inputs.
+    uint32_t const bits = cutlass::detail::copy_bits<float, uint32_t>(s);
+    uint32_t const exp  = (bits >> 23) & 0xffu;
+    uint32_t const mant = bits & 0x7fffffu;
+    uint8_t  const code = (exp == 0xffu) ? uint8_t(mant ? 0xffu : 0xfeu)
+                                         : uint8_t(exp);
+    return result_type::bitcast(code);
+  #endif
+  }
+
+  CUTLASS_HOST_DEVICE
+  result_type operator()(source_type const &s) const {
+    return convert(s);
+  }
+};
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//
 // Conversion operator for float to cutlass::tfloat32_t big and small values
 //
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1445,7 +1495,7 @@ struct NumericArrayConverter<float, cutlass::float_e4m3_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1494,7 +1544,7 @@ struct NumericArrayConverter<float_e4m3_t, float, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1538,7 +1588,7 @@ struct NumericArrayConverter<float, cutlass::float_e5m2_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1587,7 +1637,7 @@ struct NumericArrayConverter<float_e5m2_t, float, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1637,7 +1687,7 @@ struct NumericArrayConverter<cutlass::half_t, cutlass::float_e4m3_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1682,7 +1732,7 @@ struct NumericArrayConverter<float_e4m3_t, cutlass::half_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1726,7 +1776,7 @@ struct NumericArrayConverter<cutlass::half_t, cutlass::float_e5m2_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1771,7 +1821,7 @@ struct NumericArrayConverter<float_e5m2_t, cutlass::half_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1821,7 +1871,7 @@ struct NumericArrayConverter<cutlass::bfloat16_t, cutlass::float_e4m3_t, 2, Roun
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1873,7 +1923,7 @@ struct NumericArrayConverter<float_e4m3_t, cutlass::bfloat16_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1919,7 +1969,7 @@ struct NumericArrayConverter<cutlass::bfloat16_t, cutlass::float_e5m2_t, 2, Roun
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -1964,7 +2014,7 @@ struct NumericArrayConverter<float_e5m2_t, cutlass::bfloat16_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2053,7 +2103,7 @@ struct NumericArrayConverterPacked4Element<float, cutlass::float_e4m3_t, Round> 
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2108,7 +2158,7 @@ struct NumericArrayConverterPacked4Element<float_e4m3_t, float, Round> {
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2157,12 +2207,16 @@ struct NumericArrayConverterPacked4Element<float, float_ue4m3_t, Round> {
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
     uint32_t out_fp16[2];
-    uint32_t const& src_packed = reinterpret_cast<uint32_t const&>(source);
+    // The e4m3x2 instruction is the SIGNED conversion and reads bit 7 of each
+    // byte as a sign. UE4M3 is unsigned, thus the mask keeps this arm equal to
+    // the arm below and to float_ue4m3_t::convert_to_float.
+    constexpr uint32_t kMask4 = 0x01010101u * uint32_t(float_ue4m3_t::kBitMask);
+    uint32_t const src_packed = reinterpret_cast<uint32_t const&>(source) & kMask4;
 
     asm volatile( \
         "{\n" \
@@ -2212,7 +2266,7 @@ struct NumericArrayConverterPacked4Element<float_ue4m3_t, float, Round> {
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2228,6 +2282,11 @@ struct NumericArrayConverterPacked4Element<float_ue4m3_t, float, Round> {
         "}" \
         : "=r"(out) : "f"(source[0]), "f"(source[1]), "f"(source[2]), "f"(source[3]));
 
+    // The e4m3x2 instruction is the SIGNED conversion and sets bit 7 of each
+    // byte for a negative input. UE4M3 is unsigned, thus the mask keeps this
+    // arm equal to the arm below and makes each stored byte canonical.
+    constexpr uint32_t kMask4 = 0x01010101u * uint32_t(float_ue4m3_t::kBitMask);
+    out &= kMask4;
     return reinterpret_cast<result_type const &>(out);
   #else
     result_type result;
@@ -2267,7 +2326,7 @@ struct NumericArrayConverterPacked4Element<float, float_ue8m0_t, Round> {
   using BfloatArr = Array<cutlass::bfloat16_t, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_UE8M0_CVT_ENABLED)
@@ -2442,7 +2501,7 @@ struct NumericArrayConverterPacked4Element<cutlass::detail::float_e2m3_unpack8bi
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP4FP6_CVT_ENABLED)
@@ -2490,7 +2549,7 @@ struct NumericArrayConverterPacked4Element<float, cutlass::detail::float_e2m3_un
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP4FP6_CVT_ENABLED)
@@ -2551,7 +2610,7 @@ struct NumericArrayConverterPacked4Element<cutlass::detail::float_e3m2_unpack8bi
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP4FP6_CVT_ENABLED)
@@ -2600,7 +2659,7 @@ struct NumericArrayConverterPacked4Element<float, cutlass::detail::float_e3m2_un
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP4FP6_CVT_ENABLED)
@@ -2662,7 +2721,7 @@ struct NumericArrayConverterPacked4Element<float, cutlass::float_e5m2_t, Round> 
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2717,7 +2776,7 @@ struct NumericArrayConverterPacked4Element<float_e5m2_t, float, Round> {
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2771,7 +2830,7 @@ struct NumericArrayConverterPacked4Element<cutlass::half_t, cutlass::float_e4m3_
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2816,7 +2875,7 @@ struct NumericArrayConverterPacked4Element<float_e4m3_t, cutlass::half_t, Round>
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2871,7 +2930,7 @@ struct NumericArrayConverterPacked4Element<cutlass::half_t, cutlass::float_e5m2_
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2916,7 +2975,7 @@ struct NumericArrayConverterPacked4Element<float_e5m2_t, cutlass::half_t, Round>
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -2971,7 +3030,7 @@ struct NumericArrayConverterPacked4Element<cutlass::bfloat16_t, cutlass::float_e
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -3031,7 +3090,7 @@ struct NumericArrayConverterPacked4Element<float_e4m3_t, cutlass::bfloat16_t, Ro
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -3083,7 +3142,7 @@ struct NumericArrayConverterPacked4Element<cutlass::bfloat16_t, cutlass::float_e
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -3131,7 +3190,7 @@ struct NumericArrayConverterPacked4Element<float_e5m2_t, cutlass::bfloat16_t, Ro
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -3183,7 +3242,7 @@ struct NumericArrayConverterPacked4Element<float_e4m3_t, cutlass::float_e5m2_t, 
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
     result_type result;
     NumericConverter<result_element, source_element, Round> converter;
@@ -3214,7 +3273,7 @@ struct NumericArrayConverterPacked4Element<float_e5m2_t, cutlass::float_e4m3_t, 
   using source_type = Array<source_element, 4>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
     result_type result;
     NumericConverter<result_element, source_element, Round> converter;
@@ -3264,7 +3323,7 @@ private:
   using packed_source_type = Array<source_element, 4>;
 
 public:
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
     result_type result;
     packed_result_type* packed_result = reinterpret_cast<packed_result_type*>(&result);
@@ -3375,7 +3434,7 @@ struct NumericArrayConverter<float, float_ue8m0_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_UE8M0_CVT_ENABLED)
@@ -3543,12 +3602,16 @@ struct NumericArrayConverter<float, float_ue4m3_t, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
     uint32_t out_fp16;
-    uint16_t const& src_packed = reinterpret_cast<uint16_t const&>(source);
+    // The e4m3x2 instruction is the SIGNED conversion and reads bit 7 of each
+    // byte as a sign. UE4M3 is unsigned, thus the mask keeps this arm equal to
+    // the arm below and to float_ue4m3_t::convert_to_float.
+    constexpr uint16_t kMask2 = uint16_t(0x0101u * uint32_t(float_ue4m3_t::kBitMask));
+    uint16_t const src_packed = uint16_t(reinterpret_cast<uint16_t const&>(source) & kMask2);
 
     asm volatile( \
         "{\n" \
@@ -3592,7 +3655,7 @@ struct NumericArrayConverter<float_ue4m3_t, float, 2, Round> {
   using source_type = Array<source_element, 2>;
   static FloatRoundStyle const round_style = Round;
 
-  CUTLASS_DEVICE
+  CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & source) {
 
   #if defined(CUDA_PTX_FP8_CVT_ENABLED)
@@ -3604,6 +3667,11 @@ struct NumericArrayConverter<float_ue4m3_t, float, 2, Round> {
         "}" \
         : "=h"(out) : "f"(source[0]), "f"(source[1]));
 
+    // The e4m3x2 instruction is the SIGNED conversion and sets bit 7 of each
+    // byte for a negative input. UE4M3 is unsigned, thus the mask keeps this
+    // arm equal to the arm below and makes each stored byte canonical.
+    constexpr uint16_t kMask2 = uint16_t(0x0101u * uint32_t(float_ue4m3_t::kBitMask));
+    out &= kMask2;
     return reinterpret_cast<result_type const &>(out);
   #else
     result_type result;
@@ -4483,23 +4551,34 @@ uint32_t e2m1_mag_fp16_rtz(uint32_t a) {
 }
 
 // One element -> one E2M1 nibble (sign in bit 3). Converters use RNE.
+//
+// E2M1 holds no NaN encoding. cvt.rn.satfinite.e2m1x2.f32 and the intrinsic
+// __nv_cvt_*_to_fp4x2 saturate a NaN to the POSITIVE maximum, thus they give
+// nibble 0x7 for a negative NaN and for a positive NaN. The magnitude ladder
+// masks the sign off, thus it gives 7 for every NaN, and the sign bit of a
+// negative NaN would survive the OR. The `nan` term drops that sign, thus the
+// portable arm gives the same nibble as the hardware. An infinity keeps its
+// sign on the two arms.
 
 CUTLASS_HOST_DEVICE
 uint32_t e2m1_nib_f32(float v) {
   uint32_t b = reinterpret_cast<uint32_t const&>(v);
-  return ((b >> 31) << 3) | e2m1_mag_f32_rne(b);
+  uint32_t nan = ((b & 0x7FFFFFFFu) > 0x7F800000u);
+  return (((b >> 31) & (nan ^ 1u)) << 3) | e2m1_mag_f32_rne(b);
 }
 
 CUTLASS_HOST_DEVICE
 uint32_t e2m1_nib_bf16(bfloat16_t v) {
   uint32_t b = v.storage;
-  return (((b >> 15) & 1u) << 3) | e2m1_mag_bf16_rne(b);
+  uint32_t nan = ((b & 0x7FFFu) > 0x7F80u);
+  return ((((b >> 15) & 1u) & (nan ^ 1u)) << 3) | e2m1_mag_bf16_rne(b);
 }
 
 CUTLASS_HOST_DEVICE
 uint32_t e2m1_nib_fp16(half_t v) {
   uint32_t b = v.storage;
-  return (((b >> 15) & 1u) << 3) | e2m1_mag_fp16_rne(b);
+  uint32_t nan = ((b & 0x7FFFu) > 0x7C00u);
+  return ((((b >> 15) & 1u) & (nan ^ 1u)) << 3) | e2m1_mag_fp16_rne(b);
 }
 
 CUTLASS_HOST_DEVICE

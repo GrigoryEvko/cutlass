@@ -1083,6 +1083,17 @@ float_e5m2_t operator--(float_e5m2_t & lhs, int) {
 struct float_ue4m3_t : public float_exmy_base<cutlass::detail::FpEncoding::UE4M3, float_ue4m3_t> {
   using Base = float_exmy_base<cutlass::detail::FpEncoding::UE4M3, float_ue4m3_t>;
 
+  /// The stored bits that the UE4M3 encoding uses. The encoding is unsigned,
+  /// thus it holds 4 exponent bits and 3 mantissa bits, and bit 7 is not part
+  /// of it. PTX holds no UE4M3 conversion, thus each arm below uses the SIGNED
+  /// e4m3x2 instruction and must apply this mask to stay equal to the software
+  /// arm and to the block scaled MMA, which both ignore bit 7.
+  static constexpr uint8_t kBitMask =
+      uint8_t((1u << (Base::BitRepresentation::NUM_EXPONENT_BITS +
+                      Base::BitRepresentation::NUM_MANTISSA_BITS)) - 1u);
+  static_assert(!Base::BitRepresentation::IS_SIGNED && kBitMask == 0x7f,
+                "UE4M3 must be unsigned and must use 7 of the 8 stored bits");
+
   float_ue4m3_t() = default;
 
   CUTLASS_HOST_DEVICE
@@ -1091,8 +1102,10 @@ struct float_ue4m3_t : public float_exmy_base<cutlass::detail::FpEncoding::UE4M3
       uint16_t tmp;
       float y = float();
       asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;" : "=h"(tmp) : "f"(y), "f"(flt));
-      return bitcast(*reinterpret_cast<uint8_t *>(&tmp));
-    #else 
+      // The signed instruction sets bit 7 for a negative input. The mask keeps
+      // this arm equal to the software arm below.
+      return bitcast(uint8_t(*reinterpret_cast<uint8_t *>(&tmp) & kBitMask));
+    #else
       Base::FP32BitRepresentation::Storage fp32_bits = Base::FP32BitRepresentation::to_bits(flt);
       return bitcast(BitRepresentation::convert_from(fp32_bits, Base::FP32BitRepresentation{}));
     #endif
@@ -1101,11 +1114,13 @@ struct float_ue4m3_t : public float_exmy_base<cutlass::detail::FpEncoding::UE4M3
   CUTLASS_HOST_DEVICE
   float convert_to_float(float_ue4m3_t const &x) const {
     #if defined(CUDA_PTX_FP8_CVT_ENABLED)
-      uint16_t bits = x.storage;
+      // The signed instruction reads bit 7 as a sign. The mask keeps this arm
+      // equal to the software arm below.
+      uint16_t bits = uint16_t(x.storage & kBitMask);
       uint32_t packed;
       asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n" : "=r"(packed) : "h"(bits));
       return __half2float(reinterpret_cast<half2 const &>(packed).x);
-    #else 
+    #else
       Base::FP32BitRepresentation::Storage fp32_bits;
       fp32_bits = Base::BitRepresentation::convert_to(x.storage, Base::FP32BitRepresentation{});
       return detail::copy_bits<Base::FP32BitRepresentation::Storage, float>(fp32_bits);
@@ -1175,8 +1190,14 @@ struct float_ue8m0_t : public float_exmy_base<cutlass::detail::FpEncoding::UE8M0
         : "=h"(out) : "f"(flt));      
     return bitcast(*reinterpret_cast<uint8_t *>(&out));
   #else
-    if (CUTLASS_CMATH_NAMESPACE::isnan(flt) || CUTLASS_CMATH_NAMESPACE::isinf(flt)) {
+    if (CUTLASS_CMATH_NAMESPACE::isnan(flt)) {
       return bitcast(0xFF);
+    }
+    if (CUTLASS_CMATH_NAMESPACE::isinf(flt)) {
+      // The device path emits cvt.rp.satfinite.ue8m0x2.f32, and .satfinite maps
+      // an infinity to the largest finite code. Match it, so that a finite
+      // overflow does not become a NaN scale on the host only.
+      return bitcast(0xFE);
     }
     uint32_t flt_uint32 = cutlass::detail::copy_bits<float, uint32_t>(flt);
     uint8_t exp = (flt_uint32 >> 23) & 0xff;  // Extract the 8 bit exponent
