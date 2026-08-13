@@ -477,6 +477,42 @@ TEST(CuTe_core, Composition)
   //   test_composition(a, b);
   // }
 
+  // Roll-over cases. The walk of the rhs stays inside mode 0 of the lhs, thus it never rolls
+  // over into mode 1 and the result stays representable.
+  {
+    auto a = make_layout(Shape<_4,_4>{}, Stride<_4,_1>{});
+    auto b = make_layout(_2{}, _3{});
+
+    test_composition(a, b);
+  }
+
+  {
+    auto a = make_layout(Shape<_6,_4>{}, Stride<_1,_6>{});
+    auto b = make_layout(_3{}, _2{});
+
+    test_composition(a, b);
+  }
+
+  // The walk rolls over into mode 1, and the rhs stride divides the mode-0 shape, thus the
+  // roll-over lands on a mode boundary.
+  {
+    auto a = make_layout(Shape<_4,_4>{}, Stride<_4,_1>{});
+    auto b = make_layout(_4{}, _2{});
+
+    test_composition(a, b);
+  }
+
+  // Should fail to the static roll-over condition.
+  //   The walk rolls over into mode 1 after 2 elements at stride _3, thus it lands at offset 6
+  //   of a mode whose shape is _4. The remainder 2 has no representation, and before the
+  //   roll-over condition existed this pair compiled and returned (_2,_2):(_12,_1), where
+  //   result(2) is 1 and lhs(rhs(2)) is 9.
+  // {
+  //   auto a = make_layout(Shape<_4,_4>{}, Stride<_4,_1>{});
+  //   auto b = make_layout(_4{}, _3{});
+  //   test_composition(a, b);
+  // }
+
   {
     auto a = make_layout(3, _1{});
     auto b = make_layout(_4{}, _1{});

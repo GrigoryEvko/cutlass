@@ -1020,8 +1020,19 @@ group(Layout<Shape,Stride> const& layout)
 //
 // Composition of two layouts: lhs o rhs
 // @post compatible(rhs, result)
+// @pre  The Stride Divisibility Condition and the Shape Divisibility Condition
+//         hold for each mode. composition_impl below states the two conditions,
+//         and it asserts them only when the terms are static.
 // @post result(c) = lhs(rhs(c))
-//         for all c in the domain of rhs
+//         for all c in the domain of rhs,
+//         ONLY WHEN the two divisibility conditions hold.
+//         Where a condition does not hold, composition gives the by mode
+//         approximation and that approximation is not the function
+//         composition. The result can then leave the codomain of lhs. For
+//         lhs = (_3,_2):(_2,_1) and rhs = (_2,_4):(_1,_2) the post is false at
+//         c = 3, where lhs(rhs(3)) = 1 and result(3) = 6, although cosize(lhs)
+//         is 6. logical_divide, and thus each divide function, is a
+//         composition, thus each one inherits this limit.
 //
 
 namespace detail {
@@ -1102,6 +1113,26 @@ composition_impl(LShape const& lhs_shape, [[maybe_unused]] LStride const& lhs_st
                      } else {
                        // DEBUG assert can cause extra registers and inappropriate compile-time/run-time failure
                        //assert(((rest_shape % new_shape) == 0) && "Shape Divisibility Condition");
+                     }
+
+                     // Roll-over condition -- the walk must leave this mode on a mode boundary.
+                     //   The walk continues into the next mode when rest_shape > new_shape. The
+                     //   element that opens the next mode sits at offset abs(rest_stride)*new_shape,
+                     //   and next_stride carries that offset as a whole number of curr_shape steps.
+                     //   Without this condition the remainder inside curr_shape is dropped and the
+                     //   @post of composition does not hold. Example: (_4,_4):(_4,_1) o _4:_3 gives
+                     //   (_2,_2):(_12,_1), and result(2) is 1 where lhs(rhs(2)) is 9.
+                     // Weak divisibility condition
+                     if constexpr (is_static<decltype(new_shape)>::value   and
+                                   is_static<decltype(rest_shape)>::value  and
+                                   is_static<decltype(rest_stride)>::value and
+                                   is_static<decltype(curr_shape)>::value) {
+                       CUTE_STATIC_ASSERT_V((rest_shape == new_shape) or
+                                            (((abs(rest_stride) * new_shape) % curr_shape) == Int<0>{}),
+                                            "Stride Roll-over Condition");
+                     } else {
+                       // DEBUG assert can cause extra registers and inappropriate compile-time/run-time failure
+                       //assert(((rest_shape == new_shape) or ((abs(rest_stride) * new_shape) % curr_shape == 0)) && "Stride Roll-over Condition");
                      }
 
                      return cute::make_tuple(append(result_shape,  new_shape),
