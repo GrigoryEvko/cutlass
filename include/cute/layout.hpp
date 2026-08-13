@@ -1164,9 +1164,13 @@ composition(Layout<LShape,LStride> const& lhs,
 // Complement
 //
 // Build the complement of a layout.
-// @post size(@a result) >= @a cosize_hi / size(filter(@a layout)));
+// @pre  Sort filter(@a layout) by stride. With s_k, d_k the k-th shape and stride, r_0 = 1 and
+//         r_(k+1) = d_k * s_k, each d_k must be a multiple of r_k. This is the divisibility chain.
+//       A break truncates the division d_k / r_k, and a post-condition below can then fail.
+//       Such a layout can still be injective. (_2,_2):(_2,_3) has the distinct images 0, 2, 3 and 5.
+// @post size(@a result) >= size(@a cotarget) / size(filter(@a layout))
 // @post For all i in [1,size(@a result)),
-//           @a result(i) < @a result(i-1)
+//           @a result(i-1) < @a result(i)
 //           For all j in [0, size(@a layout)),
 //               @a result(i) != @a layout(j)
 //
@@ -1174,6 +1178,7 @@ composition(Layout<LShape,LStride> const& lhs,
 namespace detail {
 
 // @pre @a layout has been filtered (flattened and no stride-0 or size-1 modes).
+// Each static_assert below catches d_k < r_k only. A larger d_k that is not a multiple passes, and new_shape truncates.
 template <class Shape, class Stride, class CoTarget>
 CUTE_HOST_DEVICE constexpr
 auto
@@ -1200,7 +1205,8 @@ complement(Shape const& shape, Stride const& stride, CoTarget const& cotarget)
               auto min_idx    = cute::find(stride, min_stride);
               auto new_shape  = min_stride / get<i>(result_stride);
               auto new_stride = min_stride * get<min_idx>(shape);
-              static_assert(not is_constant<0, decltype(new_shape)>::value, "Non-injective Layout detected in complement.");
+              static_assert(not is_constant<0, decltype(new_shape)>::value, "complement: a sorted stride is less than the previous shape times stride. "
+                            "The strides form no divisibility chain. Such a layout can still be injective, for example (_2,_2):(_2,_3).");
 
               return cute::make_tuple(remove<min_idx>(shape),              // Remove the min_idx from shape
                                       remove<min_idx>(stride),             // Remove the min_idx from stride
@@ -1210,7 +1216,8 @@ complement(Shape const& shape, Stride const& stride, CoTarget const& cotarget)
 
     // Append the last shape mode
     auto new_shape    = get<0>(stride_) / get<R-1>(result_stride);         // new shape  = min_stride / last_stride
-    static_assert(not is_constant<0, decltype(new_shape)>::value, "Non-injective Layout detected in complement.");
+    static_assert(not is_constant<0, decltype(new_shape)>::value, "complement: a sorted stride is less than the previous shape times stride. "
+                  "The strides form no divisibility chain. Such a layout can still be injective, for example (_2,_2):(_2,_3).");
     auto result_shape = append(result_shape_, new_shape);
 
     // Compute the rest_shape and rest_stride
