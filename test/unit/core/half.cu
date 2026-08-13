@@ -87,4 +87,48 @@ TEST(half_t, host_arithmetic) {
   }
 }
 
+TEST(half_t, host_round_toward_zero) {
+
+  // Round toward zero must not increase a magnitude. Thus an overflow gives
+  // 0x7bff, which is the largest finite half_t. IEEE 754-2019 clause 7.4 gives
+  // this result, and __float2half_rz gives it too. Each value below comes from
+  // __float2half_rz on an sm_120 device.
+  struct {
+    uint32_t f32_bits;
+    uint16_t expected;
+  } tests[] = {
+    {0x477fffff, 0x7bff},  // 65535.996, the largest float that half_t holds
+    {0x47800000, 0x7bff},  // 65536, the smallest float that overflows half_t
+    {0xc7800000, 0xfbff},  // -65536
+    {0x7f7fffff, 0x7bff},  // the largest finite float
+    {0xff7fffff, 0xfbff},  // the smallest finite float
+    {0x7f800000, 0x7c00},  // +infinity in, +infinity out
+    {0xff800000, 0xfc00},  // -infinity in, -infinity out
+    {0x7fc00000, 0x7fff},  // NaN gives the canonical NaN
+    {0xffc00000, 0x7fff},  // a negative NaN gives the canonical NaN
+    {0x3fc00000, 0x3e00},  // 1.5, which half_t holds exactly
+    {0x00000000, 0x0000}   // the end of the list, and zero gives zero
+  };
+
+  int const count = int(sizeof(tests) / sizeof(tests[0]));
+
+  cutlass::NumericConverter<cutlass::half_t, float,
+                            cutlass::FloatRoundStyle::round_toward_zero> convert;
+
+  for (int i = 0; i < count; ++i) {
+
+    // A read of the table through a float reference breaks the aliasing rules
+    // of the language, thus this test copies the bits.
+    float f32;
+    std::memcpy(&f32, &tests[i].f32_bits, sizeof(f32));
+
+    cutlass::half_t f16 = convert(f32);
+
+    EXPECT_TRUE(tests[i].expected == f16.raw())
+      << "Error - convert(f32: 0x" << std::hex << tests[i].f32_bits
+      << ") -> 0x" << std::hex << tests[i].expected
+      << "\ngot: 0x" << std::hex << f16.raw();
+  }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////

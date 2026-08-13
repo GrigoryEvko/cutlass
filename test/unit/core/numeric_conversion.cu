@@ -827,4 +827,86 @@ TYPED_TEST(VectorArrayConverterTest, array_263) {
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace test {
+namespace core {
+namespace kernel {
+
+/// Converts one array with an explicit rounding style.
+template <typename Destination, typename Source, int Count, cutlass::FloatRoundStyle Round>
+__global__ void convert_with_round(
+  cutlass::Array<Destination, Count> *destination,
+  cutlass::Array<Source, Count> const *source) {
+
+  cutlass::NumericArrayConverter<Destination, Source, Count, Round> convert;
+
+  *destination = convert(*source);
+}
+
+} // namespace kernel
+} // namespace core
+} // namespace test
+
+/// NumericArrayConverter must give the same value as NumericConverter, element
+/// by element, at each vector width and under each rounding style. A width of 2
+/// or more selects a different specialization, thus each width is a new case.
+template <typename Destination, int Count, cutlass::FloatRoundStyle Round>
+void run_round_test(float value) {
+
+  cutlass::HostTensor<Destination, cutlass::layout::RowMajor> destination({1, Count});
+  cutlass::HostTensor<float, cutlass::layout::RowMajor> source({1, Count});
+
+  for (int i = 0; i < Count; ++i) {
+    source.host_ref().at({0, i}) = value;
+  }
+  source.sync_device();
+
+  cutlass::NumericConverter<Destination, float, Round> convert_element;
+  Destination const expected = convert_element(value);
+
+  // The host arm.
+  cutlass::NumericArrayConverter<Destination, float, Count, Round> convert_array;
+  cutlass::Array<float, Count> host_source;
+  for (int i = 0; i < Count; ++i) {
+    host_source[i] = value;
+  }
+  cutlass::Array<Destination, Count> host_result = convert_array(host_source);
+
+  // The device arm.
+  test::core::kernel::convert_with_round<Destination, float, Count, Round><<< dim3(1,1), dim3(1,1) >>>(
+    reinterpret_cast<cutlass::Array<Destination, Count> *>(destination.device_data()),
+    reinterpret_cast<cutlass::Array<float, Count> const *>(source.device_data())
+  );
+  destination.sync_host();
+
+  for (int i = 0; i < Count; ++i) {
+    EXPECT_TRUE(expected.raw() == Destination(host_result[i]).raw())
+      << "host array element " << i << " gives 0x" << std::hex
+      << Destination(host_result[i]).raw() << ", and the scalar converter gives 0x"
+      << std::hex << expected.raw();
+
+    EXPECT_TRUE(expected.raw() == destination.host_ref().at({0, i}).raw())
+      << "device array element " << i << " gives 0x" << std::hex
+      << destination.host_ref().at({0, i}).raw() << ", and the scalar converter gives 0x"
+      << std::hex << expected.raw();
+  }
+}
+
+TEST(NumericConversion, f32_to_f16_round_toward_zero) {
+  // 65536.0f is the smallest float that overflows half_t. Round toward zero
+  // gives 65504, which is 0x7bff, and it never gives an infinity.
+  run_round_test<cutlass::half_t, 1, cutlass::FloatRoundStyle::round_toward_zero>(65536.0f);
+  run_round_test<cutlass::half_t, 2, cutlass::FloatRoundStyle::round_toward_zero>(65536.0f);
+  run_round_test<cutlass::half_t, 4, cutlass::FloatRoundStyle::round_toward_zero>(65536.0f);
+  run_round_test<cutlass::half_t, 8, cutlass::FloatRoundStyle::round_toward_zero>(65536.0f);
+}
+
+TEST(NumericConversion, f32_to_bf16_round_toward_zero) {
+  run_round_test<cutlass::bfloat16_t, 1, cutlass::FloatRoundStyle::round_toward_zero>(1.1f);
+  run_round_test<cutlass::bfloat16_t, 2, cutlass::FloatRoundStyle::round_toward_zero>(1.1f);
+  run_round_test<cutlass::bfloat16_t, 4, cutlass::FloatRoundStyle::round_toward_zero>(1.1f);
+  run_round_test<cutlass::bfloat16_t, 8, cutlass::FloatRoundStyle::round_toward_zero>(1.1f);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////

@@ -195,7 +195,10 @@ TEST(bfloat16_t, host_round) {
   bool running = true;
   for (int i = 0; running; ++i) {
 
-    float f32 = reinterpret_cast<float const &>(tests[i].f32_bits);
+    // A read of the table through a float reference breaks the aliasing rules
+    // of the language, thus this test copies the bits.
+    float f32;
+    std::memcpy(&f32, &tests[i].f32_bits, sizeof(f32));
 
     cutlass::bfloat16_t bf16 = cutlass::bfloat16_t(f32);
 

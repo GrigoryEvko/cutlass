@@ -459,8 +459,19 @@ struct NumericConverter<cutlass::half_t, float, FloatRoundStyle::round_toward_ze
   #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 530)
     return cutlass::half_t(__float2half_rz(flt));
   #else
-    // software implementation rounds toward nearest even
-    unsigned const& s = reinterpret_cast<unsigned const &>(flt);
+    // The software implementation truncates the mantissa, which is round
+    // toward zero. It agrees with __float2half_rz on the full FP32 domain.
+    unsigned s;
+
+    // A read of a float object through an unsigned reference breaks the
+    // aliasing rules of the language. The host compiler then reads a stale
+    // value, and each of the tests below takes the wrong branch.
+    #if defined(__CUDA_ARCH__)
+    s = reinterpret_cast<unsigned const &>(flt);
+    #else
+    std::memcpy(&s, &flt, sizeof(s));
+    #endif
+
     uint16_t sign = uint16_t((s >> 16) & 0x8000);
     int32_t exp = int32_t((s >> 23) & 0xff) - 127;
     int mantissa = s & 0x7fffff;
@@ -475,9 +486,14 @@ struct NumericConverter<cutlass::half_t, float, FloatRoundStyle::round_toward_ze
       if (exp == 128 && mantissa) {
         // not a number
         u = 0x7fff;
-      } else {
-        // overflow to infinity
+      } else if (exp == 128) {
+        // infinity in, infinity out
         u = sign | 0x7c00;
+      } else {
+        // Round toward zero must not increase a magnitude. Thus a finite value
+        // saturates at 0x7bff, the largest finite half_t. IEEE 754-2019 clause
+        // 7.4 gives this result, and __float2half_rz gives it too.
+        u = sign | 0x7bff;
       }
       return cutlass::half_t::bitcast(u);
     }
@@ -563,7 +579,15 @@ struct NumericConverter<cutlass::bfloat16_t, float, FloatRoundStyle::round_half_
 
   CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & s) {
-    uint32_t x32 = reinterpret_cast<uint32_t const &>(s);
+    // A read of a float object through a uint32_t reference breaks the aliasing
+    // rules of the language. The host compiler then reads a stale value.
+    uint32_t x32;
+
+    #if defined(__CUDA_ARCH__)
+    x32 = reinterpret_cast<uint32_t const &>(s);
+    #else
+    std::memcpy(&x32, &s, sizeof(x32));
+    #endif
 
     #if defined(__CUDA_ARCH__)
     if (::isfinite(s)) {
@@ -594,7 +618,16 @@ struct NumericConverter<cutlass::bfloat16_t, float, FloatRoundStyle::round_towar
   CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & s) {
 
-    uint32_t x32 = reinterpret_cast<uint32_t const &>(s);
+    // A read of a float object through a uint32_t reference breaks the aliasing
+    // rules of the language. The host compiler then reads a stale value.
+    uint32_t x32;
+
+    #if defined(__CUDA_ARCH__)
+    x32 = reinterpret_cast<uint32_t const &>(s);
+    #else
+    std::memcpy(&x32, &s, sizeof(x32));
+    #endif
+
     uint16_t x16 = uint16_t(x32 >> 16);
 
     return cutlass::bfloat16_t::bitcast(x16);
@@ -641,7 +674,16 @@ struct NumericConverter<cutlass::tfloat32_t, float, FloatRoundStyle::round_to_ne
   CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & s) {
 
-    unsigned storage = reinterpret_cast<unsigned const &>(s);
+    // A read of a float object through an unsigned reference breaks the
+    // aliasing rules of the language. The host compiler then reads a stale
+    // value.
+    unsigned storage;
+
+    #if defined(__CUDA_ARCH__)
+    storage = reinterpret_cast<unsigned const &>(s);
+    #else
+    std::memcpy(&storage, &s, sizeof(storage));
+    #endif
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
     asm volatile("cvt.rn.tf32.f32 %0, %1;" : "=r"(storage) : "r"(storage));
@@ -710,12 +752,35 @@ struct NumericConverter<cutlass::tfloat32_t, float, FloatRoundStyle::round_half_
   CUTLASS_HOST_DEVICE
   static result_type convert(source_type const & s) {
 
-    unsigned y = reinterpret_cast<unsigned const &>(s);
+    // Each read below through a reference of a different type breaks the
+    // aliasing rules of the language. The host compiler then reads a stale
+    // value.
+    unsigned y;
+    float d;
+
+    #if defined(__CUDA_ARCH__)
+    y = reinterpret_cast<unsigned const &>(s);
+    #else
+    std::memcpy(&y, &s, sizeof(y));
+    #endif
+
     y = y & 0xff800000;
-    float d = reinterpret_cast<float const &>(y);
+
+    #if defined(__CUDA_ARCH__)
+    d = reinterpret_cast<float const &>(y);
+    #else
+    std::memcpy(&d, &y, sizeof(d));
+    #endif
+
     float z = d / float(1 << 11) + s;
 
+    #if defined(__CUDA_ARCH__)
     return reinterpret_cast<result_type const &>(z);
+    #else
+    unsigned z_bits;
+    std::memcpy(&z_bits, &z, sizeof(z_bits));
+    return result_type::bitcast(z_bits);
+    #endif
   }
 
   CUTLASS_HOST_DEVICE
@@ -958,6 +1023,36 @@ struct NumericArrayConverter<cutlass::half_t, float, 2, FloatRoundStyle::round_t
   }
 };
 
+/// Partial specialization for Array<half, 2> <= Array<float, 2>, for a rounding
+/// style that has no packed instruction. The specialization above is an
+/// explicit one, thus round_to_nearest still selects the packed path. Without
+/// this base case the N-element form below calls itself for N == 2.
+template <FloatRoundStyle Round>
+struct NumericArrayConverter<cutlass::half_t, float, 2, Round> {
+
+  using result_type = Array<cutlass::half_t, 2>;
+  using source_type = Array<float, 2>;
+  static FloatRoundStyle const round_style = Round;
+
+  CUTLASS_HOST_DEVICE
+  static result_type convert(source_type const & source) {
+    NumericConverter<cutlass::half_t, float, round_style> convert_;
+    // NOTE: cutlass::Array<half, N> is NOT an aggregate type and
+    //  below `{}` does NOT conduct zero initialization. Below `{}` will
+    //  conduct default initialization (calling default ctr). We use this syntax
+    //  to resolve compiler warning on uninitialized member variable.
+    Array<cutlass::half_t, 2> result{};
+    result[0] = convert_(source[0]);
+    result[1] = convert_(source[1]);
+    return result;
+  }
+
+  CUTLASS_HOST_DEVICE
+  result_type operator()(source_type const &s) const {
+    return convert(s);
+  }
+};
+
 /// Partial specialization for Array<float, 2> <= Array<cutlass::half_t, 2>, round to nearest
 template <FloatRoundStyle Round>
 struct NumericArrayConverter<float, cutlass::half_t, 2, Round> {
@@ -1119,6 +1214,35 @@ struct NumericArrayConverter<cutlass::bfloat16_t, float, 2, FloatRoundStyle::rou
     asm("cvt.rn.satfinite.bf16x2.f32 %0, %1, %2;\n" : "=r"(d) : "f"(source[1]), "f"(source[0]) );
 
     return reinterpret_cast<result_type const &>(d);
+  }
+
+  CUTLASS_HOST_DEVICE
+  result_type operator()(source_type const &s) const {
+    return convert(s);
+  }
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Partial specialization for Array<cutlass::bfloat16_t, 2> <= Array<float, 2>,
+/// for a rounding style that has no packed instruction. The two specializations
+/// above are explicit ones, thus round_to_nearest and round_to_nearest_satfinite
+/// still select the packed path. Without this base case the N-element form below
+/// calls itself for N == 2.
+template <FloatRoundStyle Round>
+struct NumericArrayConverter<cutlass::bfloat16_t, float, 2, Round> {
+
+  using result_type = Array<cutlass::bfloat16_t, 2>;
+  using source_type = Array<float, 2>;
+  static FloatRoundStyle const round_style = Round;
+
+  CUTLASS_HOST_DEVICE
+  static result_type convert(source_type const & source) {
+    NumericConverter<cutlass::bfloat16_t, float, round_style> convert_;
+    Array<cutlass::bfloat16_t, 2> result{};
+    result[0] = convert_(source[0]);
+    result[1] = convert_(source[1]);
+    return result;
   }
 
   CUTLASS_HOST_DEVICE
