@@ -204,7 +204,8 @@ TEST(CuTe_core, Complement)
   test_complement(layout);
   }
 
-  // Fails due to non-injective layout
+  // Fails due to non-injective layout. The flat form (_2,_2,_2,_2):(_1,_8,_8,_4) carries two
+  // modes of stride _8. Its 16 coordinates give only 12 distinct images.
   // {
   // auto layout = make_layout(Shape <Shape <_2,_2>,Shape <_2,_2>>{},
   //                           Stride<Stride<_1,_8>,Stride<_8,_4>>{});
@@ -212,7 +213,9 @@ TEST(CuTe_core, Complement)
   // test_complement(layout);
   // }
 
-  // Fails due to non-injective layout
+  // Fails because the sorted modes (_2:_2) then (_2:_3) form no divisibility chain. The stride
+  // _3 is less than the product _4, and new_shape truncates to _0. This layout is injective,
+  // and its four images 0, 2, 3 and 5 are distinct.
   // {
   // auto layout = Layout<Shape<_2,_2>, Stride<_2,_3>>{};
 
